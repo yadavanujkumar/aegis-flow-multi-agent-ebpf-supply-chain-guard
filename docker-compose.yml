@@ -1,0 +1,56 @@
+version: '3.8'
+services:
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - aegis_net
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    networks:
+      - aegis_net
+    volumes:
+      - ollama_data:/root/.ollama
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    ports:
+      - "3000:3000"
+    environment:
+      - NATS_URL=nats://nats:4222
+      - OLLAMA_URL=http://ollama:11434
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    depends_on:
+      - nats
+      - ollama
+    networks:
+      - aegis_net
+
+  ebpf-agent:
+    build:
+      context: ./ebpf-agent
+      dockerfile: Dockerfile.ebpf
+    privileged: true
+    pid: "host"
+    environment:
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      - nats
+    networks:
+      - aegis_net
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+
+networks:
+  aegis_net:
+    driver: bridge
+
+volumes:
+  ollama_data:
