@@ -1,0 +1,10 @@
+FROM rustlang/rust:nightly AS builder
+WORKDIR /usr/src/ebpf-agent
+RUN cargo install bpf-linker
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /usr/src/ebpf-agent/target/release/ebpf-agent .
+CMD ["./ebpf-agent"]
