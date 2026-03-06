@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+.env
+target/
+**/*.rs.bk
+Cargo.lock
