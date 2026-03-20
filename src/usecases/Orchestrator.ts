@@ -2,7 +2,14 @@ import { NatsService } from '../infrastructure/NatsService';
 import { OllamaService } from '../infrastructure/OllamaService';
 import { SlackService } from '../infrastructure/SlackService';
 import { SigstoreService } from '../infrastructure/SigstoreService';
-import { TelemetryEvent } from '../domain/Events';
+import { TelemetryEvent, TelemetryEventSchema } from '../domain/Events';
+import { logger } from '../infrastructure/Logger';
+import { config } from '../config';
+import {
+  telemetryEventsTotal,
+  maliciousEventsTotal,
+  benignEventsTotal,
+} from '../infrastructure/MetricsService';
 
 export class Orchestrator {
   constructor(
@@ -13,30 +20,55 @@ export class Orchestrator {
   ) {}
 
   async triggerDetonation(repo: string, commit: string, file: string): Promise<void> {
-    console.log(`[Detonation] Triggering gVisor sandbox for ${repo}@${commit} evaluating ${file}`);
+    logger.info('Triggering gVisor sandbox detonation', { repo, commit, file });
     // Integration with Kubernetes/Kata/gVisor goes here.
   }
 
   listenForTelemetry(): void {
     this.natsService.subscribe('aegis.telemetry', async (msg) => {
-      const event: TelemetryEvent = JSON.parse(msg);
-      console.log(`[Telemetry] Received eBPF event: ${event.command}`);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(msg);
+      } catch {
+        logger.warn('Received unparseable NATS message – discarding', { raw: msg.slice(0, 200) });
+        return;
+      }
+
+      const result = TelemetryEventSchema.safeParse(parsed);
+      if (!result.success) {
+        logger.warn('Received invalid telemetry event – discarding', { issues: result.error.issues });
+        return;
+      }
+
+      const event: TelemetryEvent = result.data;
+      telemetryEventsTotal.inc({ event_type: event.event_type });
+      logger.info('Received eBPF telemetry event', { pid: event.pid, command: event.command, event_type: event.event_type });
       await this.processEvent(event);
     });
+    logger.info('Orchestrator listening for telemetry on aegis.telemetry');
   }
 
-  private async processEvent(event: TelemetryEvent): Promise<void> {
+  async processEvent(event: TelemetryEvent): Promise<void> {
     try {
       const analysis = await this.ollamaService.analyzeBehavior(event.command);
-      if (analysis.isMalicious && analysis.confidence > 0.8) {
-        console.warn(`[Security] Malicious behavior detected! Commencing remediation.`);
+      if (analysis.isMalicious && analysis.confidence > config.MALICIOUS_CONFIDENCE_THRESHOLD) {
+        maliciousEventsTotal.inc();
+        logger.warn('Malicious behavior detected – alerting and blocking', {
+          command: event.command,
+          confidence: analysis.confidence,
+          explanation: analysis.explanation,
+        });
         await this.slackService.sendAlert(event, analysis);
       } else {
-        console.log(`[Security] Event benign. Attesting with Sigstore.`);
+        benignEventsTotal.inc();
+        logger.info('Event classified as benign – attesting with Sigstore', {
+          command: event.command,
+          confidence: analysis.confidence,
+        });
         await this.sigstoreService.attestSafeness(event.command);
       }
     } catch (err) {
-      console.error(`[Orchestrator Error] Failed to process event:`, err);
+      logger.error('Failed to process telemetry event', { error: err, command: event.command });
     }
   }
 }
