@@ -1,12 +1,20 @@
 version: '3.8'
 services:
   nats:
-    image: nats:latest
+    image: nats:2.10-alpine
+    command: ["--jetstream", "--http_port", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"
     networks:
       - aegis_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
@@ -16,6 +24,13 @@ services:
       - aegis_net
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
 
   orchestrator:
     build:
@@ -24,14 +39,33 @@ services:
     ports:
       - "3000:3000"
     environment:
+      - NODE_ENV=production
       - NATS_URL=nats://nats:4222
       - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - API_KEY=${API_KEY:-}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - METRICS_ENABLED=true
     depends_on:
-      - nats
-      - ollama
+      nats:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     networks:
       - aegis_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
   ebpf-agent:
     build:
@@ -42,11 +76,13 @@ services:
     environment:
       - NATS_URL=nats://nats:4222
     depends_on:
-      - nats
+      nats:
+        condition: service_healthy
     networks:
       - aegis_net
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug:ro
+    restart: unless-stopped
 
 networks:
   aegis_net:
@@ -54,3 +90,4 @@ networks:
 
 volumes:
   ollama_data:
+    driver: local
