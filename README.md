@@ -87,12 +87,14 @@ Aegis-Flow intercepts dependency installations, detonates them in hardened sandb
 | Retry logic (Ollama + Slack) | ✅ |
 | Structured JSON logging (Winston) | ✅ |
 | Prometheus metrics endpoint | ✅ |
-| API-key authentication | ✅ |
+| API-key authentication (timing-safe) | ✅ |
+| Request correlation IDs (`X-Request-Id`) | ✅ |
 | Zod request/response validation | ✅ |
 | Security headers (Helmet) | ✅ |
 | Rate limiting | ✅ |
-| Graceful shutdown (SIGTERM) | ✅ |
+| Graceful shutdown (SIGTERM) with timeout | ✅ |
 | NATS reconnect / drain | ✅ |
+| Live NATS health reporting | ✅ |
 | Slack Block Kit alerts + buttons | ✅ |
 | Sigstore SLSA provenance predicate | ✅ |
 | Container health checks | ✅ |
@@ -209,15 +211,17 @@ Triggers a gVisor/Kata sandbox detonation for a CI/CD dependency installation ev
 ### `GET /health`
 
 Returns live status information about the orchestrator and its connected services.
+Returns `200 OK` when all services are healthy, or `503 Service Unavailable`
+when a critical dependency (e.g. NATS) is degraded.
 
 ```jsonc
 {
-  "status": "ok",
+  "status": "ok",           // "ok" | "degraded"
   "version": "1.0.0",
   "uptime": 42.3,
   "timestamp": "2025-01-01T00:00:00.000Z",
   "services": {
-    "nats": "connected",
+    "nats": "connected",    // "connected" | "disconnected" | "reconnecting" | …
     "ollama": "http://ollama:11434",
     "slack": "configured"
   }
@@ -259,7 +263,7 @@ Key metrics:
 |---|---|
 | Malicious `postinstall` scripts | Sandboxed execution + eBPF telemetry |
 | Prompt injection via `command` field | Cosine-distance filtering; Ollama runs locally (no external exfiltration) |
-| Unauthenticated webhook calls | `X-API-Key` middleware |
+| Unauthenticated webhook calls | `X-API-Key` middleware (timing-safe comparison) |
 | Oversized payloads | 100 KB body limit |
 | Brute-force / flooding | Rate limiting (100 req/min by default) |
 | Dependency confusion | `npm audit` + Trivy in CI |
@@ -321,7 +325,7 @@ npm run lint
 
 ```bash
 npm test
-# 9 tests, ~85 % coverage
+# 20 tests, ~92 % coverage
 ```
 
 ### Project structure
@@ -340,12 +344,16 @@ src/
 │   ├── SlackService.ts          # Slack webhook client (retry)
 │   └── SigstoreService.ts       # Cosign / SLSA attestation
 ├── middleware/
-│   ├── auth.ts                  # API-key authentication
+│   ├── auth.ts                  # API-key authentication (timing-safe)
+│   ├── requestId.ts             # Request correlation ID (X-Request-Id)
 │   └── validate.ts              # Zod body validation factory
 └── usecases/
     └── Orchestrator.ts          # Core business logic
 tests/
-└── Orchestrator.test.ts         # Unit tests (Jest + ts-jest)
+├── Orchestrator.test.ts         # Unit tests (Jest + ts-jest)
+├── auth.test.ts                 # API-key auth middleware tests
+├── validate.test.ts             # Zod validation middleware tests
+└── requestId.test.ts            # Request correlation ID tests
 ebpf-agent/
 └── src/main.rs                  # Rust eBPF agent (Aya)
 ```
