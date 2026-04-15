@@ -130,7 +130,9 @@ async function bootstrap(): Promise<void> {
   async function shutdown(signal: string): Promise<void> {
     logger.info(`Received ${signal} – starting graceful shutdown`);
 
-    // Force exit if graceful shutdown takes too long
+    // Force exit if graceful shutdown takes too long.
+    // unref() allows the process to exit naturally when server.close()
+    // completes before the timeout; the timer is only a safety net.
     const forceTimer = setTimeout(() => {
       logger.error('Graceful shutdown timed out – forcing exit');
       process.exit(1);

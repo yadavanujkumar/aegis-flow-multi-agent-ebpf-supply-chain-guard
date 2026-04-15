@@ -85,4 +85,14 @@ describe('apiKeyAuth middleware', () => {
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
   });
+
+  it('should reject keys of different lengths', () => {
+    const key = 'a'.repeat(32);
+    mockConfig.API_KEY = key;
+    const next = jest.fn();
+    const res = createMockRes();
+    apiKeyAuth(createMockReq({ 'x-api-key': 'short' }) as Request, res as Response, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(401);
+  });
 });
