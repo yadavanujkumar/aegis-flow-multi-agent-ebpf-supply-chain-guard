@@ -11,6 +11,7 @@ import { SlackService } from './infrastructure/SlackService';
 import { SigstoreService } from './infrastructure/SigstoreService';
 import { apiKeyAuth } from './middleware/auth';
 import { validateBody } from './middleware/validate';
+import { requestId } from './middleware/requestId';
 import { DetonationRequestSchema } from './domain/Events';
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
@@ -19,6 +20,9 @@ const app = express();
 
 // Security headers
 app.use(helmet());
+
+// Correlation ID for distributed tracing
+app.use(requestId);
 
 // Body parsing (limit payload size to guard against DoS)
 app.use(express.json({ limit: '100kb' }));
@@ -55,13 +59,15 @@ const orchestrator = new Orchestrator(natsService, ollamaService, slackService, 
 
 // Detailed health check – returns live service states
 app.get('/health', (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: 'ok',
+  const natsStatus = natsService.connectionStatus;
+  const isHealthy = natsStatus === 'connected';
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     version: process.env.npm_package_version ?? '0.0.0',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     services: {
-      nats: 'connected',
+      nats: natsStatus,
       ollama: config.OLLAMA_URL,
       slack: config.SLACK_WEBHOOK_URL ? 'configured' : 'not configured',
     },
@@ -119,12 +125,25 @@ async function bootstrap(): Promise<void> {
     });
   });
 
+  const SHUTDOWN_TIMEOUT_MS = 10_000;
+
   async function shutdown(signal: string): Promise<void> {
     logger.info(`Received ${signal} – starting graceful shutdown`);
+
+    // Force exit if graceful shutdown takes too long.
+    // unref() allows the process to exit naturally when server.close()
+    // completes before the timeout; the timer is only a safety net.
+    const forceTimer = setTimeout(() => {
+      logger.error('Graceful shutdown timed out – forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceTimer.unref();
+
     server.close(async () => {
       try {
         await natsService.drain();
         logger.info('Graceful shutdown complete');
+        clearTimeout(forceTimer);
         process.exit(0);
       } catch (err) {
         logger.error('Error during graceful shutdown', { error: err });
